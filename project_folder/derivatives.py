@@ -207,3 +207,29 @@ class BasketCall(Option):
                                   self.sigma_list, self.corr).price()
             deltas.append((price_up - price_dn)/(2*eps*orig))
         return np.dot(self.weights, deltas)
+    
+    def vega(self, eps=1e-4, steps=252, paths=20000):
+        """
+        Approximate basket vega by bumping all local volatilities by `eps`.
+        eps: absolute bump on each sigma (e.g. 0.0001 = 1bp).
+        """
+        # 1) Base price
+        base_price = self.price(steps=steps, paths=paths)
+
+        # 2) Build a bumped instance with sigma_list + eps
+        bumped_sigmas = np.array(self.sigma_list) + eps
+        bumped = BasketCall(
+            S0_list    = self.S0_list,
+            weights    = self.weights,
+            K          = self.K,
+            T          = self.T,
+            discount   = self.discount,
+            sigma_list = bumped_sigmas,
+            corr       = self.corr
+        )
+
+        # 3) Bumped price
+        bumped_price = bumped.price(steps=steps, paths=paths)
+
+        # 4) Finite-difference vega
+        return (bumped_price - base_price) / eps
