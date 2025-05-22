@@ -1,5 +1,3 @@
-# derivatives.py
-
 import numpy as np
 from scipy.stats import norm
 from abc import ABC, abstractmethod
@@ -40,7 +38,7 @@ class Option(ABC):
         return (price_down - orig_price) / eps
 
     def _bump_sigma(self, dσ):
-        # Helper to clone & bump vol (works if subclass __init__ order is same)
+        # Helper to clone & bump vol
         return self.__class__(self.S0, self.K, self.T, self.discount,
                               getattr(self, "sigma", None) + dσ, *getattr(self, "_extra_args", []))
 
@@ -88,7 +86,6 @@ class BarrierOption(Option):
         super().__init__(S0, K, T, discount)
         self.sigma   = sigma
         self.barrier = barrier
-        # allow bump helper to pick up sigma
         self._extra_args = (barrier,)
 
     @abstractmethod
@@ -103,16 +100,18 @@ class BarrierOption(Option):
                               self.discount, self.sigma, self.barrier).price()
         return (up - down) / (2 * eps)
 
-# ── American Put ─────────────────────────────────────────────────
+# ── American Put (daily grid) ─────────────────────────────────────
 
 class AmericanPut(Option):
-    def __init__(self, S0, K, T, discount, sigma, steps=1000):
+    def __init__(self, S0, K, T, discount, sigma, steps=None):
         super().__init__(S0, K, T, discount)
         self.sigma = sigma
-        self.steps = steps
+        # steps ignored: we'll use daily grid based on T
 
     def price(self):
-        dt    = self.T / self.steps
+        # daily‐step binomial tree
+        steps = int(round(self.T * 252))
+        dt    = 1/252
         r_eff = -np.log(self.discount(dt)) / dt
         u     = np.exp(self.sigma * np.sqrt(dt))
         d     = 1 / u
@@ -120,44 +119,54 @@ class AmericanPut(Option):
         pd    = 1 - pu
         disc  = np.exp(-r_eff * dt)
 
-        ST = np.array([self.S0 * u**j * d**(self.steps-j)
-                       for j in range(self.steps+1)])
+        # terminal payoffs
+        ST = np.array([self.S0 * u**j * d**(steps-j)
+                       for j in range(steps+1)])
         payoffs = np.maximum(self.K - ST, 0)
 
-        for i in range(self.steps-1, -1, -1):
+        # backward induction
+        for i in range(steps-1, -1, -1):
             payoffs = disc * (pu * payoffs[1:] + pd * payoffs[:-1])
-            ST = ST[:i+1] / u
+            ST      = ST[:i+1] / u
             payoffs = np.maximum(payoffs, self.K - ST)
         return payoffs[0]
 
     def delta(self):
         eps = 1e-4 * self.S0
         up   = AmericanPut(self.S0+eps, self.K, self.T,
-                           self.discount, self.sigma, self.steps).price()
+                           self.discount, self.sigma).price()
         down = AmericanPut(self.S0-eps, self.K, self.T,
-                           self.discount, self.sigma, self.steps).price()
+                           self.discount, self.sigma).price()
         return (up - down) / (2 * eps)
 
-# ── Up-and-In Barrier Call ────────────────────────────────────────
+# ── Up-and-In Barrier Call (daily grid) ──────────────────────────
 
 class UpAndInBarrierCall(BarrierOption):
-    def price(self, steps=252, paths=20000):
-        dt      = self.T / steps
-        disc    = self.discount(self.T)
-        r_eff   = -np.log(disc) / self.T
+    def price(self, paths=20000):
+        """
+        Monte Carlo pricing on a daily grid:
+        steps = round(T*252), dt = 1/252
+        """
+        steps = int(round(self.T * 252))
+        dt    = 1/252
+        disc  = self.discount(self.T)
+        r_eff = -np.log(disc) / self.T
+
         payoffs = []
         for _ in range(paths):
             S = self.S0
             knocked = False
             for _ in range(steps):
+                z = np.random.randn()
                 S *= np.exp((r_eff - 0.5*self.sigma**2)*dt
-                            + self.sigma*np.sqrt(dt)*np.random.randn())
+                            + self.sigma*np.sqrt(dt)*z)
                 if S >= self.barrier:
                     knocked = True
             payoffs.append(max(S - self.K, 0) if knocked else 0)
+
         return disc * np.mean(payoffs)
 
-# ── Basket Call ──────────────────────────────────────────────────
+# ── Basket Call (daily grid) ─────────────────────────────────────
 
 class BasketCall(Option):
     def __init__(self, S0_list, weights, K, T, discount, sigma_list, corr=None):
@@ -167,11 +176,12 @@ class BasketCall(Option):
         self.sigma_list = np.array(sigma_list)
         self.corr       = corr if corr is not None else np.eye(len(S0_list))
 
-    def price(self, steps=252, paths=20000):
-        """Vectorized Monte Carlo for a European basket call."""
-        dt   = self.T / steps
-        L    = np.linalg.cholesky(self.corr)
-        disc = self.discount(self.T)
+    def price(self, paths=20000):
+        """Monte Carlo pricing on a daily grid: steps=round(T*252), dt=1/252"""
+        steps = int(round(self.T * 252))
+        dt    = 1/252
+        L     = np.linalg.cholesky(self.corr)
+        disc  = self.discount(self.T)
 
         payoffs = []
         for _ in range(paths):
@@ -180,8 +190,8 @@ class BasketCall(Option):
 
             S = np.tile(self.S0_list[:, None], (1, steps))
 
-            drift = ((-np.log(disc)/self.T) 
-                     - 0.5 * self.sigma_list**2) * dt
+            r_eff = -np.log(disc) / self.T
+            drift = (r_eff - 0.5*self.sigma_list**2) * dt
             drift = drift[:, None]
 
             shock = self.sigma_list[:, None] * np.sqrt(dt) * C
@@ -208,15 +218,11 @@ class BasketCall(Option):
             deltas.append((price_up - price_dn)/(2*eps*orig))
         return np.dot(self.weights, deltas)
     
-    def vega(self, eps=1e-4, steps=252, paths=20000):
+    def vega(self, eps=1e-4, paths=20000):
         """
         Approximate basket vega by bumping all local volatilities by `eps`.
-        eps: absolute bump on each sigma (e.g. 0.0001 = 1bp).
         """
-        # 1) Base price
-        base_price = self.price(steps=steps, paths=paths)
-
-        # 2) Build a bumped instance with sigma_list + eps
+        base_price = self.price(paths=paths)
         bumped_sigmas = np.array(self.sigma_list) + eps
         bumped = BasketCall(
             S0_list    = self.S0_list,
@@ -227,9 +233,5 @@ class BasketCall(Option):
             sigma_list = bumped_sigmas,
             corr       = self.corr
         )
-
-        # 3) Bumped price
-        bumped_price = bumped.price(steps=steps, paths=paths)
-
-        # 4) Finite-difference vega
+        bumped_price = bumped.price(paths=paths)
         return (bumped_price - base_price) / eps
