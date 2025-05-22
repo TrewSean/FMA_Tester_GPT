@@ -170,14 +170,16 @@ class BasketCall(Option):
 
         factors = np.exp(drift + shock)
         S0_mat  = self.S0_list[:, None, None]
-        S_paths = np.zeros((n, steps+1, paths))
-        S_paths[:, 0, :] = S0_mat
-        S_paths[:, 1:, :] = S0_mat * np.cumprod(factors, axis=1)
+                S_paths = np.zeros((n, steps+1, paths))
+        # t=0 initial spots, broadcast along paths
+        S_paths[:, 0, :] = self.S0_list[:, None]
+        # t=1..T evolve from initial S0
+        S_paths[:, 1:, :] = self.S0_list[:, None, None] * np.cumprod(factors, axis=1)
 
         ST      = S_paths[:, -1, :]
         basket  = self.weights.dot(ST)
         payoffs = np.maximum(basket - self.K, 0)
-        return disc * payoffs.mean()
+        return disc * payoffs.mean()()
 
     def delta(self, paths=20000):
         steps = int(round(self.T * 252))
