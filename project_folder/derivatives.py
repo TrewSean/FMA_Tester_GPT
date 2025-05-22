@@ -24,13 +24,11 @@ class Option(ABC):
         pass
 
     def vega(self, eps=1e-4):
-        # Finite-difference vega
         up   = self._bump_sigma(+eps).price()
         down = self._bump_sigma(-eps).price()
         return (up - down) / (2 * eps)
 
     def theta(self, eps=1/365):
-        # Finite-difference theta (1 day)
         orig_price = self.price()
         self.T -= eps
         price_down = self.price()
@@ -38,7 +36,6 @@ class Option(ABC):
         return (price_down - orig_price) / eps
 
     def _bump_sigma(self, dσ):
-        # Helper to clone & bump vol
         return self.__class__(
             self.S0, self.K, self.T, self.discount,
             getattr(self, "sigma", None) + dσ,
@@ -105,7 +102,6 @@ class AmericanPut(Option):
         self.sigma = sigma
 
     def price(self):
-        # daily-step binomial tree
         steps = int(round(self.T * 252))
         dt    = 1/252
         r_eff = -np.log(self.discount(dt)) / dt
@@ -115,11 +111,9 @@ class AmericanPut(Option):
         pd    = 1 - pu
         disc  = np.exp(-r_eff * dt)
 
-        # terminal payoffs
         ST = np.array([self.S0 * u**j * d**(steps-j) for j in range(steps+1)])
         payoffs = np.maximum(self.K - ST, 0)
 
-        # backward induction with early exercise
         for i in range(steps-1, -1, -1):
             payoffs = disc * (pu * payoffs[1:] + pd * payoffs[:-1])
             ST      = ST[:i+1] / u
@@ -137,7 +131,7 @@ class AmericanPut(Option):
 class UpAndInBarrierCall(BarrierOption):
     def price(self, paths=20000):
         """
-        Vectorized Monte Carlo pricing of an up-and-in barrier call on a daily grid:
+        Vectorized MC pricing of up-and-in barrier call on a daily grid:
         steps = round(T*252), dt = 1/252
         """
         steps = int(round(self.T * 252))
@@ -145,19 +139,14 @@ class UpAndInBarrierCall(BarrierOption):
         disc  = self.discount(self.T)
         r_eff = -np.log(disc) / self.T
 
-        # 1) draw all normals at once: shape (steps, paths)
+        # draw normals: shape (steps, paths)
         Z = np.random.randn(steps, paths)
-        # 2) compute GBM increments: shape (steps, paths)
         increments = np.exp((r_eff - 0.5*self.sigma**2)*dt + self.sigma*np.sqrt(dt)*Z)
-        # 3) build price paths:       shape (steps+1, paths)
         S_paths = np.empty((steps+1, paths))
         S_paths[0] = self.S0
         S_paths[1:] = self.S0 * np.cumprod(increments, axis=0)
-        # 4) barrier check per path
         knocked = (S_paths >= self.barrier).any(axis=0)
-        # 5) payoffs
         payoffs = np.where(knocked, np.maximum(S_paths[-1] - self.K, 0), 0)
-
         return disc * payoffs.mean()
 
 # ── Basket Call (vectorized MC) ───────────────────────────────────
@@ -172,7 +161,7 @@ class BasketCall(Option):
 
     def price(self, paths=20000):
         """
-        Vectorized Monte Carlo pricing of a European basket call on a daily grid:
+        Vectorized MC pricing of basket call on a daily grid:
         steps = round(T*252), dt = 1/252
         """
         steps = int(round(self.T * 252))
@@ -180,34 +169,28 @@ class BasketCall(Option):
         disc  = self.discount(self.T)
         L     = np.linalg.cholesky(self.corr)
 
-        # 1) draw raw normals: shape (n_assets, steps, paths)
         Z = np.random.randn(len(self.S0_list), steps, paths)
-        # 2) apply correlation:     shape (n_assets, steps, paths)
-        C = L @ Z
+        C = np.tensordot(L, Z, axes=[1,0])  # shape (n_assets, steps, paths)
 
-        # 3) compute drift and shock arrays
         r_eff = -np.log(disc) / self.T
         drift = ((r_eff - 0.5*self.sigma_list**2)*dt)[:, None, None]
         shock = self.sigma_list[:, None, None] * np.sqrt(dt) * C
 
-        # 4) build simulation:      shape (n_assets, steps+1, paths)
         S0_mat = self.S0_list[:, None, None]
         factors = np.exp(drift + shock)
         S_paths = np.empty((len(self.S0_list), steps+1, paths))
         S_paths[:, 0, :] = S0_mat
         S_paths[:, 1:, :] = S0_mat * np.cumprod(factors, axis=1)
 
-        # 5) terminal basket and payoff
-        ST = S_paths[:, -1, :]                # (n_assets, paths)
-        basket = self.weights.dot(ST)         # (paths,)
+        ST = S_paths[:, -1, :]
+        basket = self.weights.dot(ST)
         payoffs = np.maximum(basket - self.K, 0)
-
         return disc * payoffs.mean()
 
     def delta(self, eps=1e-4):
         deltas = []
         for i in range(len(self.S0_list)):
-            orig = self.S0_list[i]
+            orig    = self.S0_list[i]
             up_list = self.S0_list.copy(); up_list[i] = orig*(1+eps)
             dn_list = self.S0_list.copy(); dn_list[i] = orig*(1-eps)
             price_up = BasketCall(up_list, self.weights, self.K, self.T, self.discount, self.sigma_list, self.corr).price(paths=paths)
@@ -216,9 +199,6 @@ class BasketCall(Option):
         return np.dot(self.weights, deltas)
 
     def vega(self, eps=1e-4, paths=20000):
-        """
-        Approximate basket vega by bumping all local volatilities by `eps`.
-        """
         base_price = self.price(paths=paths)
         bumped_sigmas = np.array(self.sigma_list) + eps
         bumped = BasketCall(
