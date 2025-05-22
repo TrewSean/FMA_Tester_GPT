@@ -168,19 +168,30 @@ class BasketCall(Option):
         self.corr       = corr if corr is not None else np.eye(len(S0_list))
 
     def price(self, steps=252, paths=20000):
-        dt    = self.T / steps
-        L     = np.linalg.cholesky(self.corr)
-        disc  = self.discount(self.T)
-        pay   = []
+        """Vectorized Monte Carlo for a European basket call."""
+        dt   = self.T / steps
+        L    = np.linalg.cholesky(self.corr)
+        disc = self.discount(self.T)
+
+        payoffs = []
         for _ in range(paths):
             Z = np.random.randn(len(self.S0_list), steps)
             C = L @ Z
+
             S = np.tile(self.S0_list[:, None], (1, steps))
-            S *= np.exp(((-np.log(disc)/self.T) - 0.5*self.sigma_list**2)*dt
-                        + self.sigma_list*np.sqrt(dt)*C)
+
+            drift = ((-np.log(disc)/self.T) 
+                     - 0.5 * self.sigma_list**2) * dt
+            drift = drift[:, None]
+
+            shock = self.sigma_list[:, None] * np.sqrt(dt) * C
+
+            S = S * np.exp(drift + shock)
+
             ST = S[:, -1]
-            pay.append(max(self.weights.dot(ST) - self.K, 0))
-        return disc * np.mean(pay)
+            payoffs.append(max(self.weights.dot(ST) - self.K, 0))
+
+        return disc * np.mean(payoffs)
 
     def delta(self, eps=1e-4):
         deltas = []
