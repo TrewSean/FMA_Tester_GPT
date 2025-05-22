@@ -237,20 +237,34 @@ class BasketCall(Option):
         return self.discount(self.T) * np.mean(payoff)
 
     def delta(self, eps=1e-4, paths=None):
+        """
+        Portfolio delta = sum_i w_i * ∂P/∂S_i via finite differences.
+        """
         base_price = self.price(paths=paths)
-        bumped_S0 = self.S0_list + eps
-        bumped = BasketCall(
-            S0_list    = bumped_S0,
-            weights    = self.weights,
-            K          = self.K,
-            T          = self.T,
-            discount   = self.discount,
-            sigma_list = self.sigma_list,
-            corr       = self.corr,
-            paths      = paths or self.paths
-        )
-        bumped_price = bumped.price(paths=paths)
-        return (bumped_price - base_price) / eps
+        n          = len(self.S0_list)
+        partials   = np.zeros(n)
+
+        # bump each asset in turn
+        for i in range(n):
+            bumped_S0 = self.S0_list.copy()
+            bumped_S0[i] += eps
+
+            bumped = BasketCall(
+                S0_list    = bumped_S0,
+                weights    = self.weights,
+                K          = self.K,
+                T          = self.T,
+                discount   = self.discount,
+                sigma_list = self.sigma_list,
+                corr       = self.corr,
+                paths      = paths or self.paths
+            )
+            partials[i] = (bumped.price(paths=paths) - base_price) / eps
+
+        # portfolio (scalar) delta
+        portfolio_delta = np.dot(self.weights, partials)
+        return portfolio_delta
+
 
     def vega(self, eps=1e-4, paths=None):
         """
