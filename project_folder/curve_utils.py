@@ -1,0 +1,30 @@
+import pandas as pd
+from datetime import date
+import re
+
+# 1)  file name
+excel_path = "f17hist.xlsx"          # no path needed if the file is beside the notebook
+curve_date = date(2025, 4, 30)
+
+# 2)  read the worksheet
+df = pd.read_excel(excel_path,
+                   sheet_name="Yields",   # <- this sheet holds the zero-rates
+                   skiprows=10)           # RBA puts headers in the first 10 rows
+
+# 3)  tidy the date column
+df.rename(columns={"Series ID": "Date"}, inplace=True)
+df["Date"] = pd.to_datetime(df["Date"]).dt.date
+
+# 4)  isolate the 30-Apr row
+row = df.loc[df["Date"] == curve_date]
+
+if row.empty:
+    raise ValueError("30-Apr-2025 not found – check the file or the date format!")
+
+# 5)  keep only zero-rate columns (e.g. FZCY50D, FZCY75D, …)
+zero_cols = [c for c in row.columns if re.fullmatch(r"FZCY\d+D", c)]
+row_zero  = row[zero_cols].iloc[0]    # turn 1-row DataFrame into a Series
+
+print("First few zero-rates (% p.a.):")
+print(row_zero.head())
+
