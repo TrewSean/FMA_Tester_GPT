@@ -1,16 +1,42 @@
 import numpy as np
 from scipy.stats import norm
 from abc import ABC, abstractmethod
+from pandas import pd
+from yfinance import yf
 
 # ── Abstract Base ─────────────────────────────────────────────────
 
+###create class for share
+class Share:
+    def __init__(self, ticker, trade_date):
+        self.ticker = ticker
+        self.trade_date = trade_date
+
+    def get_price(self):
+        
+        next_day   = (pd.to_datetime(self.trade_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        df_spot  = yf.download(self.ticker, start=self.trade_date, end=next_day, progress=False)["Close"]
+        S0       = df_spot.loc[self.trade_date].to_dict()  # spot prices dict
+        return S0
+
+    def get_volatility(self):
+        hist = yf.download(self.ticker, end=self.trade_date, period="1y", progress=False)["Close"]
+        rets = hist.pct_change().dropna()                # daily returns
+        vol  = (rets.std() * np.sqrt(252)).to_dict()     # annualised vol σ√252
+    
+        return vol
+
+-----------------------------------------------------------------------------
+
+# ── Abstract Option ────────────────────────────────────────────────
 class Option(ABC):
     """
     Base class for all options.
     Must implement price() and delta().
     """
-    def __init__(self, S0, K, T, discount):
-        self.S0       = S0
+    def __init__(self,shareobject, K, T, discount):
+        self.shareobject = shareobject
+        self.S0       = shareobject.get_price()  # Current price of the underlying share
         self.K        = K
         self.T        = T
         self.discount = discount
@@ -43,9 +69,9 @@ class Option(ABC):
 # ── Vanilla European ────────────────────────────────────────────────
 
 class EuropeanCall(Option):
-    def __init__(self, S0, K, T, discount, sigma):
-        super().__init__(S0, K, T, discount)
-        self.sigma = sigma
+    def __init__(self, Share, K, T, discount):
+        super().__init__(Share, K, T, discount)
+        self.sigma = Share.get_volatility()  # Current volatility of the underlying share
 
     def price(self):
         r = -np.log(self.discount(self.T)) / self.T
