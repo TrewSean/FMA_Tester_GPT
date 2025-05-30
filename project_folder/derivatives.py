@@ -1,13 +1,37 @@
+
 import numpy as np
 from scipy.stats import norm
 from abc import ABC, abstractmethod
 import pandas as pd
 import yfinance as yf
 
-# ── Abstract Base ─────────────────────────────────────────────────
 
-###create class for share
+
+import numpy as np
+import matplotlib.pyplot as plt
+np.random.seed(42)  # Reproducibility
+
+# Configurable Parameters
+risk_free_rate = 0.05
+initial_price_A = 100.0
+initial_price_B = 100.0
+initial_price_C = 100.0
+volatility_A = 0.20
+volatility_B = 0.20
+volatility_C = 0.20
+strike_price = 100.0
+barrier_level = 80.0
+maturity = 1.0
+num_simulations = 10000
+
+class YieldCurve:
+    def __init__(self, rate):
+        self.rate = rate
+    def get_discount_factor(self, T):
+        return np.exp(-self.rate * T)
+yield_curve = YieldCurve(risk_free_rate)
 class Share:
+
     def __init__(self, ticker, trade_date):
         self.ticker = ticker
         self.trade_date = trade_date
