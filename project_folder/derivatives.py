@@ -1,8 +1,8 @@
 import numpy as np
 from scipy.stats import norm
 from abc import ABC, abstractmethod
-from pandas import pd
-from yfinance import yf
+import pandas as pd
+import yfinance as yf
 
 # ── Abstract Base ─────────────────────────────────────────────────
 
@@ -11,20 +11,23 @@ class Share:
     def __init__(self, ticker, trade_date):
         self.ticker = ticker
         self.trade_date = trade_date
-
+   
     def get_price(self):
-        
-        next_day   = (pd.to_datetime(self.trade_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-        df_spot  = yf.download(self.ticker, start=self.trade_date, end=next_day, progress=False)["Close"]
-        S0       = df_spot.loc[self.trade_date].to_dict()  # spot prices dict
-        return S0
+        next_day = (pd.to_datetime(self.trade_date) + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        df_spot = yf.download(self.ticker, start=self.trade_date, end=next_day, progress=False)["Close"]
+        price = df_spot.loc[self.trade_date]
+        if isinstance(price, pd.Series):
+            price = price.iloc[0]
+        return float(price)
 
     def get_volatility(self):
         hist = yf.download(self.ticker, end=self.trade_date, period="1y", progress=False)["Close"]
-        rets = hist.pct_change().dropna()                # daily returns
-        vol  = (rets.std() * np.sqrt(252)).to_dict()     # annualised vol σ√252
-    
-        return vol
+        rets = hist.pct_change().dropna()
+        vol = rets.std() * np.sqrt(252)
+        if isinstance(vol, pd.Series):
+            vol = vol.iloc[0]
+        return float(vol)
+
 
 
 # ── Abstract Option ────────────────────────────────────────────────
@@ -94,9 +97,9 @@ class EuropeanCall(Option):
 
 
 class EuropeanPut(Option):
-    def __init__(self, S0, K, T, discount, sigma):
-        super().__init__(S0, K, T, discount)
-        self.sigma = sigma
+    def __init__(self, Share, K, T, discount):
+        super().__init__(Share, K, T, discount)
+        self.sigma = Share.get_volatility()
 
     def price(self):
         r = -np.log(self.discount(self.T)) / self.T
@@ -119,9 +122,9 @@ class EuropeanPut(Option):
 # ── American Put via CRR ─────────────────────────────────────────────
 
 class AmericanPut(Option):
-    def __init__(self, S0, K, T, discount, sigma):
-        super().__init__(S0, K, T, discount)
-        self.sigma = sigma
+    def __init__(self, Share, K, T, discount):
+        super().__init__(Share, K, T, discount)
+        self.sigma = Share.get_volatility()  # Current volatility of the underlying share
 
     def price(self):
         """
@@ -176,9 +179,9 @@ class AmericanPut(Option):
 # ── Single‐Barrier (Up‐and‐In) ────────────────────────────────────────
 
 class BarrierOption(Option):
-    def __init__(self, S0, K, T, discount, sigma, barrier):
-        super().__init__(S0, K, T, discount)
-        self.sigma  = sigma
+    def __init__(self, Share, K, T, discount, barrier):
+        super().__init__(Share, K, T, discount)
+        self.sigma  = Share.get_volatility()  # Current volatility of the underlying share
         self.barrier = barrier
 
     def price(self):
@@ -223,21 +226,18 @@ class BarrierOption(Option):
 # ── Basket Call via Monte Carlo ──────────────────────────────────────
 
 class BasketCall(Option):
-    def __init__(self, S0_list, weights, K, T, discount,
-                 sigma_list, corr, paths=100000):
-        """
-        Monte‐Carlo basket call.
-        corr should be positive‐definite.
-        """
-        # treat lists as vectors
-        self.S0_list    = np.array(S0_list)
+    def __init__(self, share_list, weights, K, T, discount, corr, paths=100000):
+        self.share_list = share_list
+        self.S0_list    = np.array([s.get_price() for s in share_list])
+        self.sigma_list = np.array([s.get_volatility() for s in share_list])
         self.weights    = np.array(weights)
         self.K          = K
         self.T          = T
         self.discount   = discount
-        self.sigma_list = np.array(sigma_list)
         self.corr       = np.array(corr)
         self.paths      = paths
+    # (rest of your BasketCall methods unchanged)
+
 
     def price(self, paths=None):
         if paths is None:
@@ -269,22 +269,34 @@ class BasketCall(Option):
         n          = len(self.S0_list)
         partials   = np.zeros(n)
 
-        # bump each asset in turn
         for i in range(n):
-            bumped_S0 = self.S0_list.copy()
-            bumped_S0[i] += eps
+            # Make a bumped list of Share objects, but just for S0 bump, we can hack this by creating a fake Share object with bumped price and original vol
+            class BumpedShare:
+                def __init__(self, price, vol):
+                    self._price = price
+                    self._vol = vol
+                def get_price(self):
+                    return self._price
+                def get_volatility(self):
+                    return self._vol
+
+            bumped_shares = [
+                BumpedShare(self.S0_list[j] + (eps if i == j else 0), self.sigma_list[j])
+                for j in range(n)
+            ]
 
             bumped = BasketCall(
-                S0_list    = bumped_S0,
+                share_list = bumped_shares,
                 weights    = self.weights,
                 K          = self.K,
                 T          = self.T,
                 discount   = self.discount,
-                sigma_list = self.sigma_list,
                 corr       = self.corr,
                 paths      = paths or self.paths
             )
             partials[i] = (bumped.price(paths=paths) - base_price) / eps
+
+
 
         # portfolio (scalar) delta
         portfolio_delta = np.dot(self.weights, partials)
@@ -296,14 +308,28 @@ class BasketCall(Option):
         Approximate basket vega by bumping all local volatilities by `eps`.
         """
         base_price = self.price(paths=paths)
-        bumped_sigmas = self.sigma_list + eps
+        n = len(self.sigma_list)
+        # Build a bumped share_list with increased volatility
+        class BumpedShare:
+            def __init__(self, price, vol):
+                self._price = price
+                self._vol = vol
+            def get_price(self):
+                return self._price
+            def get_volatility(self):
+                return self._vol
+
+        bumped_shares = [
+            BumpedShare(self.S0_list[j], self.sigma_list[j] + eps)
+            for j in range(n)
+        ]
+
         bumped = BasketCall(
-            S0_list    = self.S0_list,
+            share_list = bumped_shares,
             weights    = self.weights,
             K          = self.K,
             T          = self.T,
             discount   = self.discount,
-            sigma_list = bumped_sigmas,
             corr       = self.corr,
             paths      = paths or self.paths
         )
