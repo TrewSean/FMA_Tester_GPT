@@ -285,16 +285,16 @@ class BasketCall(Option):
         payoff = np.maximum(np.dot(ST, self.weights) - self.K, 0)
         return self.discount(self.T) * np.mean(payoff)
 
+
     def delta(self, eps=1e-4, paths=None):
         """
-        Portfolio delta = sum_i w_i * ∂P/∂S_i via finite differences.
+        Returns the array of partial deltas for each underlying asset.
         """
         base_price = self.price(paths=paths)
-        n          = len(self.S0_list)
-        partials   = np.zeros(n)
+        n = len(self.S0_list)
+        partials = np.zeros(n)
 
         for i in range(n):
-            # Make a bumped list of Share objects, but just for S0 bump, we can hack this by creating a fake Share object with bumped price and original vol
             class BumpedShare:
                 def __init__(self, price, vol):
                     self._price = price
@@ -320,11 +320,7 @@ class BasketCall(Option):
             )
             partials[i] = (bumped.price(paths=paths) - base_price) / eps
 
-
-
-        # portfolio (scalar) delta
-        portfolio_delta = np.dot(self.weights, partials)
-        return portfolio_delta
+        return partials  # <-- now returns the vector!
 
 
     def vega(self, eps=1e-4, paths=None):
